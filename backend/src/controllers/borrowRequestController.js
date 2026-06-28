@@ -134,8 +134,48 @@ const approveBorrowRequest = async (req, res) => {
   }
 };
 
+const rejectBorrowRequest = async (req, res) => {
+    try{
+        const id = Number(req.params.id);
+
+        const borrowRequest = await prisma.borrowRequest.findUnique({
+            where: { id },
+        });
+
+        if (!borrowRequest) {
+            return res.status(404).json({
+                message: "Borrow request not found",
+            });
+        }
+
+        if (borrowRequest.status !== "pending"){
+            return res.status(400).json({
+                message: "Request already processed",
+            });
+        }
+
+        const updatedRequest = await prisma.borrowRequest.update({
+            where: { id },
+            data: {
+                status: "rejected",
+            },
+        });
+
+        return res.status(200).json({
+            message: "Borrow request rejected",
+            borrowRequest: updatedRequest,
+        });
+    } catch (error) {
+        return res.status(500).json({
+            message: "failed to reject Borrow Request",
+            error: error.message,
+        });
+    }
+};
+
 module.exports = {
   createBorrowRequest,
   getBorrowRequests,
   approveBorrowRequest,
+  rejectBorrowRequest,
 };
