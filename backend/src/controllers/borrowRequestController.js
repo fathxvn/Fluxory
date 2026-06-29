@@ -3,10 +3,17 @@ const prisma = require("../config/prisma");
 const createBorrowRequest = async (req, res) => {
   try {
     const { itemId, quantity, notes } = req.body;
+    const requestedQuantity = Number(quantity);
 
     if (!itemId || !quantity) {
       return res.status(400).json({
         message: "Item and quantity are required",
+      });
+    }
+
+    if (!Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {
+      return res.status(400).json({
+        message: "Quantity must be a positive number",
       });
     }
 
@@ -20,7 +27,7 @@ const createBorrowRequest = async (req, res) => {
       });
     }
 
-    if (Number(quantity) > item.quantity) {
+    if (requestedQuantity > item.quantity) {
       return res.status(400).json({
         message: "Requested quantity exceeds stock",
       });
@@ -30,7 +37,7 @@ const createBorrowRequest = async (req, res) => {
       data: {
         userId: req.user.id,
         itemId: Number(itemId),
-        quantity: Number(quantity),
+        quantity: requestedQuantity,
         notes,
         status: "pending",
       },
@@ -51,6 +58,7 @@ const createBorrowRequest = async (req, res) => {
 const getBorrowRequests = async (req, res) => {
   try {
     const borrowRequests = await prisma.borrowRequest.findMany({
+      where: req.user.role === "admin" ? undefined : { userId: req.user.id },
       include: {
         user: {
           select: {
@@ -79,48 +87,55 @@ const approveBorrowRequest = async (req, res) => {
   try {
     const id = Number(req.params.id);
 
-    const borrowRequest = await prisma.borrowRequest.findUnique({
-      where: { id },
-      include: { item: true },
-    });
-
-    if (!borrowRequest) {
-      return res.status(404).json({
-        message: "Borrow request not found",
-      });
-    }
-
-    if (borrowRequest.status !== "pending") {
-      return res.status(400).json({
-        message: "Request already processed",
-      });
-    }
-
-    if (borrowRequest.quantity > borrowRequest.item.quantity) {
-      return res.status(400).json({
-        message: "Item stock is not enough",
-      });
-    }
-
     const result = await prisma.$transaction(async (tx) => {
-      await tx.item.update({
+      const borrowRequest = await tx.borrowRequest.findUnique({
+        where: { id },
+        include: { item: true },
+      });
+
+      if (!borrowRequest) {
+        return { errorStatus: 404, message: "Borrow request not found" };
+      }
+
+      if (borrowRequest.status !== "pending") {
+        return { errorStatus: 400, message: "Request already processed" };
+      }
+
+      if (borrowRequest.quantity > borrowRequest.item.quantity) {
+        return { errorStatus: 400, message: "Item stock is not enough" };
+      }
+
+      const updatedItem = await tx.item.updateMany({
         where: {
           id: borrowRequest.itemId,
+          quantity: {
+            gte: borrowRequest.quantity,
+          },
         },
         data: {
-          quantity: borrowRequest.item.quantity - borrowRequest.quantity,
+          quantity: {
+            decrement: borrowRequest.quantity,
+          },
         },
       });
 
-      const updatedRequest = await tx.borrowRequest.update({
+      if (updatedItem.count === 0) {
+        return { errorStatus: 400, message: "Item stock is not enough" };
+      }
+
+      return tx.borrowRequest.update({
         where: { id },
         data: {
           status: "approved",
         },
       });
-
-      return updatedRequest;
     });
+
+    if (result.errorStatus) {
+      return res.status(result.errorStatus).json({
+        message: result.message,
+      });
+    }
 
     return res.status(200).json({
       message: "Borrow request approved",
@@ -135,42 +150,97 @@ const approveBorrowRequest = async (req, res) => {
 };
 
 const rejectBorrowRequest = async (req, res) => {
-    try{
-        const id = Number(req.params.id);
+  try {
+    const id = Number(req.params.id);
 
-        const borrowRequest = await prisma.borrowRequest.findUnique({
-            where: { id },
-        });
+    const borrowRequest = await prisma.borrowRequest.findUnique({
+      where: { id },
+    });
 
-        if (!borrowRequest) {
-            return res.status(404).json({
-                message: "Borrow request not found",
-            });
-        }
-
-        if (borrowRequest.status !== "pending"){
-            return res.status(400).json({
-                message: "Request already processed",
-            });
-        }
-
-        const updatedRequest = await prisma.borrowRequest.update({
-            where: { id },
-            data: {
-                status: "rejected",
-            },
-        });
-
-        return res.status(200).json({
-            message: "Borrow request rejected",
-            borrowRequest: updatedRequest,
-        });
-    } catch (error) {
-        return res.status(500).json({
-            message: "failed to reject Borrow Request",
-            error: error.message,
-        });
+    if (!borrowRequest) {
+      return res.status(404).json({
+        message: "Borrow request not found",
+      });
     }
+
+    if (borrowRequest.status !== "pending") {
+      return res.status(400).json({
+        message: "Request already processed",
+      });
+    }
+
+    const updatedRequest = await prisma.borrowRequest.update({
+      where: { id },
+      data: {
+        status: "rejected",
+      },
+    });
+
+    return res.status(200).json({
+      message: "Borrow request rejected",
+      borrowRequest: updatedRequest,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to reject borrow request",
+      error: error.message,
+    });
+  }
+};
+
+const returnBorrowRequest = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    const borrowRequest = await prisma.borrowRequest.findUnique({
+      where: { id },
+      include: {
+        item: true,
+      },
+    });
+
+    if (!borrowRequest) {
+      return res.status(404).json({
+        message: "Borrow request not found",
+      });
+    }
+
+    if (borrowRequest.status !== "approved") {
+      return res.status(400).json({
+        message: "Only approved request can be returned",
+      });
+    }
+
+    const updatedRequest = await prisma.$transaction(async (tx) => {
+      await tx.item.update({
+        where: {
+          id: borrowRequest.itemId,
+        },
+        data: {
+          quantity: {
+            increment: borrowRequest.quantity,
+          },
+        },
+      });
+
+      return tx.borrowRequest.update({
+        where: { id },
+        data: {
+          status: "returned",
+        },
+      });
+    });
+
+    return res.status(200).json({
+      message: "Borrow request returned successfully",
+      borrowRequest: updatedRequest,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to return borrow request",
+      error: error.message,
+    });
+  }
 };
 
 module.exports = {
@@ -178,4 +248,5 @@ module.exports = {
   getBorrowRequests,
   approveBorrowRequest,
   rejectBorrowRequest,
+  returnBorrowRequest,
 };

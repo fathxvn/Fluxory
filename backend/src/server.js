@@ -5,6 +5,7 @@ require("dotenv").config();
 const itemRoutes = require("./routes/itemRoutes");
 const authRoutes = require("./routes/authRoutes");
 const borrowRequestRoutes = require("./routes/borrowRequestRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 
 const app = express();
 
@@ -20,6 +21,7 @@ app.get("/", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/items", itemRoutes);
 app.use("/api/borrow-requests", borrowRequestRoutes); 
+app.use("/api/dashboard", dashboardRoutes);
 
 
 const PORT = process.env.PORT || 5000;
